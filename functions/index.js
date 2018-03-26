@@ -9,43 +9,75 @@ admin.initializeApp(functions.config().firebase);
  * Vote for like/dislike
  * @param event 
  */
-function countSize(event) {
-    const ref = event.data.ref.parent;
-    return ref.get().then(snapshot => {
-            let count = 0;
-            if (snapshot.size > 2) { // if size is bigger than 2, it probablly has `count` document.
-                count = snapshot.size - 1;
-            } else { // if size is 1 or 2, then it may not have `count` document yet.
-                snapshot.forEach(doc => {
-                    if (doc && doc.exists) {
-                        if (doc.id !== 'count') {
-                            count++;
-                        }
-                    }
-                });
-            }
-            // console.log(`${ref.path} count: `, count);
-            return ref.doc('count').set({
-                count: count
-            });
-        })
-        .then(() => {
-            // console.log(`${ref.path} counted: `);
-            return;
-        });
+function increaseSize(event, num) {
+    
+    const dataRef = event.data.ref;
+    if ( dataRef.id === 'count' ) return Promise.resolve(); // don't count for 'count' doc itself.
+    const ref = dataRef.parent;
+    return ref.doc('count').get().then( doc => {
+        var count = 0;
+        if ( doc && doc.exists ) {
+            count = doc.data().count;
+        } else {
+            count = 0;
+        }
+        count = count + num;        // increase/decrease by 1
+        if ( count < 0 ) count = 0;
+        return ref.doc('count').set( { count: count } );
+    });
+
+    // return ref.get().then(snapshot => {
+    //         let count = 0;
+    //         if (snapshot.size > 2) { // if size is bigger than 2, it probablly has `count` document.
+    //             count = snapshot.size - 1;
+    //         } else { // if size is 1 or 2, then it may not have `count` document yet.
+    //             snapshot.forEach(doc => {
+    //                 if (doc && doc.exists) {
+    //                     if (doc.id !== 'count') {
+    //                         count++;
+    //                     }
+    //                 }
+    //             });
+    //         }
+    //         // console.log(`${ref.path} count: `, count);
+    //         return ref.doc('count').set({
+    //             count: count
+    //         });
+    //     })
+    //     .then(() => {
+    //         // console.log(`${ref.path} counted: `);
+    //         return;
+    //     });
+
+
+
 }
-exports.postLike = functions.firestore.document('/fire-library/{domain}/posts/{post}/likes/{uid}').onWrite(event => {
-    return countSize(event);
+exports.postLike = functions.firestore.document('/fire-library/{domain}/posts/{post}/likes/{uid}').onCreate(event => {
+    return increaseSize(event, 1);
 })
-exports.postDislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/dislikes/{uid}').onWrite(event => {
-    return countSize(event);
+exports.postDislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/dislikes/{uid}').onCreate(event => {
+    return increaseSize(event, 1);
 })
-exports.commentLike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/likes/{uid}').onWrite(event => {
-    return countSize(event);
+exports.commentLike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/likes/{uid}').onCreate(event => {
+    return increaseSize(event, 1);
 })
-exports.commentDislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/dislikes/{uid}').onWrite(event => {
-    return countSize(event);
+exports.commentDislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/dislikes/{uid}').onCreate(event => {
+    return increaseSize(event, 1);
 })
+
+exports.postUnlike = functions.firestore.document('/fire-library/{domain}/posts/{post}/likes/{uid}').onDelete(event => {
+    return increaseSize(event, -1);
+})
+exports.postUndislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/dislikes/{uid}').onDelete(event => {
+    return increaseSize(event, -1);
+})
+exports.commentUnlike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/likes/{uid}').onDelete(event => {
+    return increaseSize(event, -1);
+})
+exports.commentUndislike = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}/dislikes/{uid}').onDelete(event => {
+    return increaseSize(event, -1);
+})
+
 
 /**
  * File uploads.
@@ -150,6 +182,7 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
         console.log('Got Signed URLs.');
         const thumbResult = results[0];
         const originalResult = results[1];
+
         const thumbFileUrl = thumbResult[0];
         const fileUrl = originalResult[0];
         // Add the URLs to the Database
@@ -159,12 +192,98 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
         //   var temp = 'temp/thumbnails/' + paths.join('/');
 
 
-        const data = {path: fileUrl, thumbnail: thumbFileUrl};
-        const ref = admin.firestore().doc( 'temp/stroage/thumbnails/' + thumbFilePath );
-        console.log('Leave a url & thumbnail url at : ', ref.path, data);
-        return ref.set({
+        const data = {
+            path: fileUrl,
+            thumbnail: thumbFileUrl,
             created: (new Date).getTime()
-        });
+        };
+        const ref = admin.firestore().doc('temp/storage/thumbnails/' + thumbFilePath);
+        console.log('Leave a url & thumbnail url at : ', ref.path, data);
+        return ref.set(data);
         //   return admin.database().ref('images').push();
     }).then(() => console.log('Thumbnail URLs saved to database.'));
 });
+
+/**
+ * @see FireLibrary#README##thumbnail
+ */
+function updatePhoto(event) {
+    const fs = admin.firestore();
+    const data = event.data.data();
+    // console.log('data: ', data);
+    // console.log('event.data.ref.path: ', event.data.ref.path);
+    const arr = event.data.ref.path.split('/posts/');
+    const uid = data.uid;
+    const path = arr.join('/' + uid + '/');
+    const tempRef = fs.collection('temp/storage/thumbnails/' + path);
+    // console.log('tempRef.path: ', tempRef.path);
+
+    const postRef = fs.doc(event.data.ref.path);
+    // console.log('postRef: ', postRef.path);
+
+    var serverData;
+    var tempSize = 0;
+    var tempDocuments = [];
+    return postRef.get().then(doc => {          // May not need to get the data since `event` has it already.
+        // console.log('doc: ', doc.data());
+        serverData = doc.data();
+        // console.log('serverData: ', serverData);
+        return tempRef.get();
+    }).then(docs => {
+        tempSize = docs.size;
+        // console.log('size: ', docs.size);
+        if ( docs.size === 0 ) {
+            console.log('No thumbnail exists for: ', postRef.path);
+            return null;
+        }
+        var countMatch = 0;
+        docs.forEach( doc => {
+            const data = doc.data();
+            const name = doc.id.replace('thumb_', '');
+            // console.log('name: ', name);
+            // console.log('thumbnail: ', data['thumbnail']);
+            // console.log('path: ', data['path']);
+            // console.log('serverData.data.length: ', serverData.data.length);
+            if (serverData.data.length) {
+                for (var file of serverData.data) {
+                    if (file['name'] === name) {
+                        // console.log('Gotcha! ', file['name'] + '===' + name);
+                        // console.log('Got thumbnail for: ', file['name']);
+                        file['thumbnailUrl'] = data['thumbnail'];
+                        countMatch++;
+                        tempDocuments.push( doc.path );
+                        break;
+                    }
+                }
+            }
+        });
+
+        if (countMatch) {
+            return postRef.update({
+                data: serverData.data
+            });
+        }
+        else return null;
+    })
+    .then( () => {
+        return tempRef.get();               // Does it really need to read again?
+    }).then( docs => {
+        if ( docs.size === 0 ) {
+            return null;
+        }
+        var all = [];
+        docs.forEach( doc => {
+            all.push( doc.ref.delete() );
+        });
+        return Promise.all( all );
+    });
+}
+
+
+
+exports.updatePostPhoto = functions.firestore.document('/fire-library/{domain}/posts/{post}').onWrite(event => {
+    return updatePhoto(event);
+})
+exports.updateCommentPhoto = functions.firestore.document('/fire-library/{domain}/posts/{post}/comments/{comment}').onWrite(event => {
+    return updatePhoto(event);
+})
