@@ -10,20 +10,22 @@ admin.initializeApp(functions.config().firebase);
  * @param event 
  */
 function increaseSize(event, num) {
-    
+
     const dataRef = event.data.ref;
-    if ( dataRef.id === 'count' ) return Promise.resolve(); // don't count for 'count' doc itself.
+    if (dataRef.id === 'count') return Promise.resolve(); // don't count for 'count' doc itself.
     const ref = dataRef.parent;
-    return ref.doc('count').get().then( doc => {
+    return ref.doc('count').get().then(doc => {
         var count = 0;
-        if ( doc && doc.exists ) {
+        if (doc && doc.exists) {
             count = doc.data().count;
         } else {
             count = 0;
         }
-        count = count + num;        // increase/decrease by 1
-        if ( count < 0 ) count = 0;
-        return ref.doc('count').set( { count: count } );
+        count = count + num; // increase/decrease by 1
+        if (count < 0) count = 0;
+        return ref.doc('count').set({
+            count: count
+        });
     });
 
     // return ref.get().then(snapshot => {
@@ -121,19 +123,19 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
 
     // Exit if this is triggered on a file that is not an image.
     if (!contentType.startsWith('image/')) {
-        console.log('This is not an image.');
+        // console.log('This is not an image.');
         return null;
     }
 
     // Exit if the image is already a thumbnail.
     if (fileName.startsWith(THUMB_PREFIX)) {
-        console.log('Already a Thumbnail.');
+        // console.log('Already a Thumbnail.');
         return null;
     }
 
     // Exit if this is a move or deletion event.
     if (event.data.resourceState === 'not_exists') {
-        console.log('This is a deletion event.');
+        // console.log('This is a deletion event.');
         return null;
     }
 
@@ -152,20 +154,20 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
             destination: tempLocalFile
         });
     }).then(() => {
-        console.log('The file has been downloaded to', tempLocalFile);
+        // console.log('The file has been downloaded to', tempLocalFile);
         // Generate a thumbnail using ImageMagick.
         return spawn('convert', [tempLocalFile, '-thumbnail', `${THUMB_MAX_WIDTH}x${THUMB_MAX_HEIGHT}>`, tempLocalThumbFile], {
             capture: ['stdout', 'stderr']
         });
     }).then(() => {
-        console.log('Thumbnail created at', tempLocalThumbFile);
+        // console.log('Thumbnail created at', tempLocalThumbFile);
         // Uploading the Thumbnail.
         return bucket.upload(tempLocalThumbFile, {
             destination: thumbFilePath,
             metadata: metadata
         });
     }).then(() => {
-        console.log('Thumbnail uploaded to Storage at', thumbFilePath);
+        // console.log('Thumbnail uploaded to Storage at', thumbFilePath);
         // Once the image has been uploaded delete the local files to free up disk space.
         fs.unlinkSync(tempLocalFile);
         fs.unlinkSync(tempLocalThumbFile);
@@ -179,7 +181,7 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
             file.getSignedUrl(config),
         ]);
     }).then((results) => {
-        console.log('Got Signed URLs.');
+        // console.log('Got Signed URLs.');
         const thumbResult = results[0];
         const originalResult = results[1];
 
@@ -192,16 +194,66 @@ exports.generateThumbnail = functions.storage.object().onChange((event) => {
         //   var temp = 'temp/thumbnails/' + paths.join('/');
 
 
-        const data = {
-            path: fileUrl,
-            thumbnail: thumbFileUrl,
-            created: (new Date).getTime()
-        };
-        const ref = admin.firestore().doc('temp/storage/thumbnails/' + thumbFilePath);
-        console.log('Leave a url & thumbnail url at : ', ref.path, data);
-        return ref.set(data);
+        /**
+         * For profile, it does not write a temporary data. Instead it updates user's profile photo fields.
+         * It first deletes old profile photo.
+         */
+        if (thumbFilePath.indexOf('/profile-photo/') !== -1) {
+            const data = {
+                name: fileName,
+                url: fileUrl,
+                thumbnailUrl: thumbFileUrl,
+                fullPath: filePath,
+                created: (new Date).getTime()
+            };
+            const ps = thumbFilePath.split('/');
+            const root = ps.shift();
+            const domain = ps.shift();
+            const uid = ps.shift();
+
+            // const key = ps.pop();
+            // const path = ps.join('/');
+            const userPath = root + '/' + domain + '/users/' + uid;
+            /**
+             * @warning nesting .then() is a bad idea but couldn't find a way to get rid of it.
+             */
+            return admin.firestore().doc(userPath).update({
+                profilePhoto: data
+            });
+
+            // .get()
+            // .then(doc => {
+            //     if (doc && doc.exists) {
+            //         console.log('DELETING OLD PROFILE DATA : ', doc.data());
+            //         return doc.ref.delete();
+            //     }
+            //     else return null;
+            // })
+            // .then(() => {
+            //     console.log('Profile Photo: Leave a url & thumbnail url at : ', ref.path, data);
+            //     return ref.update({
+            //         profilePhoto: data
+            //     });
+            // });
+
+
+        } else {
+            const data = {
+                path: fileUrl,
+                thumbnail: thumbFileUrl,
+                created: (new Date).getTime()
+            };
+            const ref = admin.firestore().doc('temp/thumbnails/' + thumbFilePath);
+            console.log('Post: Leave a url & thumbnail url at : ', ref.path, data);
+            return ref.set(data);
+        }
         //   return admin.database().ref('images').push();
-    }).then(() => console.log('Thumbnail URLs saved to database.'));
+    });
+    // .then(() => console.log('Thumbnail URLs saved to database.'));
+    /**
+     * Normally this does not create error.
+     * .catch() {}.
+     */
 });
 
 /**
@@ -214,8 +266,8 @@ function updatePhoto(event) {
     // console.log('event.data.ref.path: ', event.data.ref.path);
     const arr = event.data.ref.path.split('/posts/');
     const uid = data.uid;
-    const path = arr.join('/' + uid + '/');
-    const tempRef = fs.collection('temp/storage/thumbnails/' + path);
+    const path = arr.join('/' + uid + '/posts/');
+    const tempRef = fs.collection('temp/thumbnails/' + path);
     // console.log('tempRef.path: ', tempRef.path);
 
     const postRef = fs.doc(event.data.ref.path);
@@ -224,63 +276,65 @@ function updatePhoto(event) {
     var serverData;
     var tempSize = 0;
     var tempDocuments = [];
-    return postRef.get().then(doc => {          // May not need to get the data since `event` has it already.
-        // console.log('doc: ', doc.data());
-        serverData = doc.data();
-        // console.log('serverData: ', serverData);
-        return tempRef.get();
-    }).then(docs => {
-        tempSize = docs.size;
-        // console.log('size: ', docs.size);
-        if ( docs.size === 0 ) {
-            console.log('No thumbnail exists for: ', postRef.path);
-            return null;
-        }
-        var countMatch = 0;
-        docs.forEach( doc => {
-            const data = doc.data();
-            const name = doc.id.replace('thumb_', '');
-            // console.log('name: ', name);
-            // console.log('thumbnail: ', data['thumbnail']);
-            // console.log('path: ', data['path']);
-            // console.log('serverData.data.length: ', serverData.data.length);
-            if (serverData.data.length) {
-                for (var file of serverData.data) {
-                    if (file['name'] === name) {
-                        // console.log('Gotcha! ', file['name'] + '===' + name);
-                        // console.log('Got thumbnail for: ', file['name']);
-                        file['thumbnailUrl'] = data['thumbnail'];
-                        countMatch++;
-                        tempDocuments.push( doc.path );
-                        break;
+    return postRef.get().then(doc => { // May not need to get the data since `event` has it already.
+            // console.log('doc: ', doc.data());
+            serverData = doc.data();
+            // console.log('serverData: ', serverData);
+            return tempRef.get();
+        }).then(docs => {
+            tempSize = docs.size;
+            // console.log('size: ', docs.size);
+            if (docs.size === 0) {
+                // console.log('No thumbnail exists for: ', postRef.path);
+                return null;
+            }
+            var countMatch = 0;
+            docs.forEach(doc => {
+                const data = doc.data();
+                const name = doc.id.replace('thumb_', '');
+                // console.log('name: ', name);
+                // console.log('thumbnail: ', data['thumbnail']);
+                // console.log('path: ', data['path']);
+                // console.log('serverData.data.length: ', serverData.data.length);
+                if (serverData.data.length) {
+                    for (var file of serverData.data) {
+                        if (file['name'] === name) {
+                            // console.log('Gotcha! ', file['name'] + '===' + name);
+                            // console.log('Got thumbnail for: ', file['name']);
+                            file['thumbnailUrl'] = data['thumbnail'];
+                            countMatch++;
+                            tempDocuments.push(doc.path);
+                            break;
+                        }
                     }
                 }
-            }
-        });
-
-        if (countMatch) {
-            return postRef.update({
-                data: serverData.data
             });
-        }
-        else return null;
-    })
-    .then( () => {
-        return tempRef.get();               // Does it really need to read again?
-    }).then( docs => {
-        if ( docs.size === 0 ) {
-            return null;
-        }
-        var all = [];
-        docs.forEach( doc => {
-            all.push( doc.ref.delete() );
+
+            if (countMatch) {
+                return postRef.update({
+                    data: serverData.data
+                });
+            } else return null;
+        })
+        .then(() => {
+            return tempRef.get(); // Does it really need to read again?
+        }).then(docs => {
+            if (docs.size === 0) {
+                return null;
+            }
+            var all = [];
+            docs.forEach(doc => {
+                all.push(doc.ref.delete());
+            });
+            return Promise.all(all);
         });
-        return Promise.all( all );
-    });
 }
 
 
-
+/**
+ * @code How to call
+ *          updatePostPhoto({before: {uid: 'USER-UID'}, after: {uid: 'USER-UID'}}, {params: {domain: 'localhost', post: 'POST-ID'}});
+ */
 exports.updatePostPhoto = functions.firestore.document('/fire-library/{domain}/posts/{post}').onWrite(event => {
     return updatePhoto(event);
 })
